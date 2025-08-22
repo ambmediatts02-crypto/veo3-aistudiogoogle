@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Project, AspectRatio, GenerationStatus, BaseImage, VideoOptions, GenerationMode, GeneratedPrompts, StoryboardImage, ObjectRole, DirectorStyle, Scene, ChatMessage, ChatSession } from './types';
+import { Project, AspectRatio, GenerationStatus, BaseImage, VideoOptions, GenerationMode, GeneratedPrompts, StoryboardImage, ObjectRole, DirectorStyle, Scene, ChatMessage, ChatSession, VideoModel } from './types';
 import { LOADING_MESSAGES } from './constants';
 import { generateVideo, pollVideoStatus, fetchVideoBlob, generatePromptFromStoryboard, getCreativeSpark, regenerateScene, translateText, startChat, summarizeChatIntoBrief, generateChatTitle, generateAudioNarration } from './services/geminiService';
 import { useLocalStorage } from './hooks/useLocalStorage';
@@ -7,13 +7,12 @@ import { Header } from './components/Header';
 import { ModeSelector } from './components/ModeSelector';
 import { SingleScene } from './components/SingleScene';
 import { StoryboardEditor } from './components/StoryboardEditor';
-import { OptionsPanel } from './components/OptionsPanel';
 import { Loader } from './components/Loader';
 import { VideoResult } from './components/VideoResult';
 import { PromptResult } from './components/PromptResult';
 import { ErrorDisplay } from './components/ErrorDisplay';
 import { ChatHistorySidebar } from './components/ChatHistorySidebar';
-import { MenuIcon, XCircleIcon, FolderIcon } from './components/icons';
+import { MenuIcon, FolderIcon } from './components/icons';
 import { ProjectManagerModal } from './components/ProjectManagerModal';
 
 const createNewProject = (name: string): Project => ({
@@ -24,6 +23,7 @@ const createNewProject = (name: string): Project => ({
   singlePrompt: '',
   singleReferenceImage: null,
   generatedVideoUrl: null,
+  videoModel: VideoModel.VEO_3,
   mainBrief: '',
   backgroundImage: null,
   objectImages: [],
@@ -50,8 +50,6 @@ const App: React.FC = () => {
   
   // --- Local UI State ---
   const [isSparking, setIsSparking] = useState<boolean>(false);
-  const [regeneratingSceneId, setRegeneratingSceneId] = useState<string | null>(null);
-  const [isOvertureSaving, setIsOvertureSaving] = useState<boolean>(false);
   const [dialogueMode, setDialogueMode] = useState<boolean>(false);
   const [isChatting, setIsChatting] = useState<boolean>(false);
   const [isFinalizingScript, setIsFinalizingScript] = useState<boolean>(false);
@@ -91,16 +89,11 @@ const App: React.FC = () => {
   // --- Effects ---
   useEffect(() => {
     // This effect handles initialization and recovery for projects.
-    // It ensures there's always at least one project and a valid active project ID.
     if (projects.length === 0) {
-      // Case 1: No projects exist (either first load or user deleted all).
-      // Create a new default project to prevent the app from getting stuck in a loading state.
       const firstProject = createNewProject('My First Project');
       setProjects([firstProject]);
       setActiveProjectId(firstProject.id);
     } else {
-      // Case 2: Projects exist, but the active ID might be invalid (e.g., project was deleted).
-      // If the active project doesn't exist in the current list, default to the first available one.
       const activeProjectExists = projects.some(p => p.id === activeProjectId);
       if (!activeProjectExists) {
         setActiveProjectId(projects[0].id);
@@ -110,9 +103,8 @@ const App: React.FC = () => {
   }, [projects]);
   
   useEffect(() => {
-    // This effect handles initialization and recovery for chat sessions, parallel to the projects logic.
+    // This effect handles initialization and recovery for chat sessions.
     if (chatSessions.length === 0) {
-      // Case 1: No chat sessions exist. Create a default one.
       const newSession: ChatSession = {
         id: crypto.randomUUID(),
         title: 'New Chat',
@@ -123,7 +115,6 @@ const App: React.FC = () => {
       setChatSessions([newSession]);
       setActiveChatId(newSession.id);
     } else {
-      // Case 2: Sessions exist, but active ID might be invalid.
       const activeChatExists = chatSessions.some(s => s.id === activeChatId);
       if (!activeChatExists) {
         setActiveChatId(chatSessions[0].id);
@@ -149,9 +140,7 @@ const App: React.FC = () => {
   useEffect(() => {
     let interval: ReturnType<typeof setTimeout>;
     if (generationStatus === GenerationStatus.GENERATING) {
-      const messages = activeProject?.mode === GenerationMode.STORYBOARD 
-        ? ["Analyzing cast and props...", "Adopting Director's Style...", "Writing the final script...", "Designing the soundscape..."] 
-        : LOADING_MESSAGES;
+      const messages = LOADING_MESSAGES;
       let messageIndex = 0;
       setLoadingMessage(messages[0]);
       interval = setInterval(() => {
@@ -160,7 +149,7 @@ const App: React.FC = () => {
       }, 4000);
     }
     return () => clearInterval(interval);
-  }, [generationStatus, activeProject?.mode]);
+  }, [generationStatus]);
 
 
   // --- Project Management Handlers ---
@@ -168,7 +157,7 @@ const App: React.FC = () => {
     const newProject = createNewProject(`Project ${projects.length + 1}`);
     setProjects(prev => [...prev, newProject]);
     setActiveProjectId(newProject.id);
-    setIsProjectModalOpen(false); // Close modal on creation
+    setIsProjectModalOpen(false);
   };
 
   const handleSelectProject = (id: string) => {
@@ -263,11 +252,10 @@ const App: React.FC = () => {
     setIsChatting(true);
     setError(null);
 
-    // Auto-title generation in parallel for UX, don't block the chat
     if (isFirstMessage) {
       generateChatTitle(message).then(newTitle => {
         if (newTitle) handleRenameChat(activeChatSession.id, newTitle);
-      }).catch(console.error); // Log error but don't show to user
+      }).catch(console.error);
     }
 
     try {
@@ -283,7 +271,6 @@ const App: React.FC = () => {
         setChatHistory(prev => [...prev, modelMessage]);
     } catch (err: any) {
         setError(err.message || "An error occurred in the chat.");
-        // Revert user message on error
         setChatHistory(prev => prev.slice(0, -1));
     } finally {
         setIsChatting(false);
@@ -331,7 +318,18 @@ const App: React.FC = () => {
 
     try {
         if (activeProject.mode === GenerationMode.SINGLE) {
-           throw new Error("Single Scene mode generation not fully implemented in this version.");
+            const operation = await generateVideo(
+                activeProject.singlePrompt,
+                { aspectRatio: AspectRatio.SIXTEEN_NINE }, // Example, could be made dynamic
+                activeProject.singleReferenceImage,
+                activeProject.videoModel
+            );
+            const finalOperation = await pollVideoStatus(operation, () => {});
+            const downloadLink = finalOperation.response?.generatedVideos?.[0]?.video?.uri;
+            if (!downloadLink) throw new Error("Video generation succeeded but no download link was found.");
+            
+            const videoUrl = await fetchVideoBlob(downloadLink);
+            updateActiveProject({ generatedVideoUrl: videoUrl });
         } else {
             const prompts = await generatePromptFromStoryboard(
                 activeProject.mainBrief, 
@@ -340,111 +338,13 @@ const App: React.FC = () => {
                 activeProject.directorStyle
             );
             updateActiveProject({ generatedPrompts: prompts });
-            setGenerationStatus(GenerationStatus.SUCCESS);
         }
+        setGenerationStatus(GenerationStatus.SUCCESS);
     } catch(err: any) {
         setError(err.message || "An unexpected error occurred during generation.");
         setGenerationStatus(GenerationStatus.ERROR);
     }
   }, [activeProject, updateActiveProject]);
-  
-  const handleUpdateOverture = async (indonesianText: string) => {
-    if (!activeProject?.generatedPrompts) return;
-    setIsOvertureSaving(true);
-    try {
-        const englishText = await translateText(indonesianText, 'indonesian', 'english');
-        const newPrompts = {
-            ...activeProject.generatedPrompts,
-            overture: { english: englishText, indonesian: indonesianText }
-        };
-        updateActiveProject({ generatedPrompts: newPrompts });
-    } catch (err: any) {
-        setError(err.message || "Failed to sync overture.");
-    } finally {
-        setIsOvertureSaving(false);
-    }
-  };
-
-  const handleRegenerateScene = async (sceneIdToRegenerate: string) => {
-    if (!activeProject?.generatedPrompts) return;
-    setRegeneratingSceneId(sceneIdToRegenerate);
-    try {
-        const newSceneData = await regenerateScene({
-            sceneIdToRegenerate,
-            mainBrief: activeProject.mainBrief,
-            backgroundImage: activeProject.backgroundImage,
-            objectImages: activeProject.objectImages,
-            directorStyle: activeProject.directorStyle,
-            overture: activeProject.generatedPrompts.overture,
-            allScenes: activeProject.generatedPrompts.scenes
-        });
-        const newScenes = activeProject.generatedPrompts.scenes.map(s => s.id === sceneIdToRegenerate ? { ...s, ...newSceneData, videoUrl: undefined, videoGenerationStatus: GenerationStatus.IDLE, audioUrl: undefined, audioGenerationStatus: GenerationStatus.IDLE } : s);
-        updateActiveProject({ generatedPrompts: { ...activeProject.generatedPrompts, scenes: newScenes } });
-    } catch (err: any) {
-        setError(err.message || "Failed to regenerate scene.");
-    } finally {
-        setRegeneratingSceneId(null);
-    }
-  };
-
-  const handleUpdateScene = (sceneId: string, updatedScene: Partial<Scene>) => {
-    if (!activeProject?.generatedPrompts) return;
-    const newScenes = activeProject.generatedPrompts.scenes.map(s => s.id === sceneId ? { ...s, ...updatedScene } : s);
-    updateActiveProject({ generatedPrompts: { ...activeProject.generatedPrompts, scenes: newScenes } });
-  };
-  
-  const handleDeleteScene = (sceneId: string) => {
-    if (!activeProject?.generatedPrompts) return;
-    const newScenes = activeProject.generatedPrompts.scenes.filter(s => s.id !== sceneId);
-    updateActiveProject({ generatedPrompts: { ...activeProject.generatedPrompts, scenes: newScenes } });
-  };
-
-  const handleGenerateSceneVideo = async (sceneId: string) => {
-    if (!activeProject?.generatedPrompts) return;
-    const scene = activeProject.generatedPrompts.scenes.find(s => s.id === sceneId);
-    if (!scene) {
-        setError("Scene not found");
-        return;
-    }
-
-    handleUpdateScene(sceneId, { videoGenerationStatus: GenerationStatus.GENERATING });
-
-    try {
-        const operation = await generateVideo(scene.english, { aspectRatio: AspectRatio.SIXTEEN_NINE }, null);
-        const finalOperation = await pollVideoStatus(operation, () => {});
-
-        const downloadLink = finalOperation.response?.generatedVideos?.[0]?.video?.uri;
-        if (!downloadLink) throw new Error("Video generation succeeded but no download link was found.");
-        
-        const videoUrl = await fetchVideoBlob(downloadLink);
-        handleUpdateScene(sceneId, { videoGenerationStatus: GenerationStatus.SUCCESS, videoUrl });
-
-    } catch (err: any) {
-        console.error("Error generating scene video:", err);
-        handleUpdateScene(sceneId, { videoGenerationStatus: GenerationStatus.ERROR });
-    }
-};
-
-const handleGenerateSceneAudio = async (sceneId: string) => {
-    if (!activeProject?.generatedPrompts) return;
-    const scene = activeProject.generatedPrompts.scenes.find(s => s.id === sceneId);
-    if (!scene?.voiceOver_Indonesian) {
-        setError("No voice-over text found for this scene.");
-        return;
-    }
-
-    handleUpdateScene(sceneId, { audioGenerationStatus: GenerationStatus.GENERATING });
-    
-    try {
-        const audioUrl = await generateAudioNarration(scene.voiceOver_Indonesian);
-        handleUpdateScene(sceneId, { audioGenerationStatus: GenerationStatus.SUCCESS, audioUrl });
-
-    } catch (err: any) {
-        console.error("Error generating scene audio:", err);
-        handleUpdateScene(sceneId, { audioGenerationStatus: GenerationStatus.ERROR });
-    }
-};
-
 
   // --- Render Logic ---
   const isGenerating = generationStatus === GenerationStatus.GENERATING;
@@ -516,6 +416,8 @@ const handleGenerateSceneAudio = async (sceneId: string) => {
                                 referenceImage={activeProject.singleReferenceImage}
                                 setReferenceImage={(img) => updateActiveProject({ singleReferenceImage: img })}
                                 disabled={isGenerating}
+                                videoModel={activeProject.videoModel}
+                                setVideoModel={(m) => updateActiveProject({ videoModel: m })}
                             />
                         ) : (
                             <StoryboardEditor 
@@ -568,14 +470,6 @@ const handleGenerateSceneAudio = async (sceneId: string) => {
                     {generationStatus === GenerationStatus.SUCCESS && activeProject.generatedPrompts && activeProject.mode === GenerationMode.STORYBOARD && (
                         <PromptResult 
                             prompts={activeProject.generatedPrompts}
-                            onUpdateOverture={handleUpdateOverture}
-                            isOvertureSaving={isOvertureSaving}
-                            onRegenerateScene={handleRegenerateScene}
-                            onUpdateScene={handleUpdateScene}
-                            onDeleteScene={handleDeleteScene}
-                            regeneratingSceneId={regeneratingSceneId}
-                            onGenerateSceneVideo={handleGenerateSceneVideo}
-                            onGenerateSceneAudio={handleGenerateSceneAudio}
                         />
                     )}
                     

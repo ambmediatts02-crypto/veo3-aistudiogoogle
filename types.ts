@@ -25,6 +25,11 @@ export enum DirectorStyle {
   EPIC_SWEEPING = 'EPIC_SWEEPING',
 }
 
+export enum VideoModel {
+  VEO_2 = 'veo-2.0-generate-001',
+  VEO_3 = 'veo-3.0-generate-preview',
+}
+
 export interface VideoOptions {
   aspectRatio: AspectRatio;
 }
@@ -47,11 +52,6 @@ export interface StoryboardImage extends BaseImage {
   visualPassportId?: string; // For future Visual Consistency feature
 }
 
-export interface Soundscape {
-  music: string;
-  sfx: string[];
-}
-
 export interface ChatMessage {
     role: 'user' | 'model';
     text: string;
@@ -65,27 +65,7 @@ export interface ChatSession {
   createdAt: number;
 }
 
-// New structure for individual scenes
-export interface Scene {
-  id: string;
-  english: string;
-  indonesian: string;
-  voiceOver_Indonesian?: string; // For optional AI-generated narration
-  videoUrl?: string;
-  videoGenerationStatus?: GenerationStatus;
-  audioUrl?: string;
-  audioGenerationStatus?: GenerationStatus;
-}
-
-// Overhauled GeneratedPrompts for interactive editing
-export interface GeneratedPrompts {
-  overture: {
-    english: string;
-    indonesian: string;
-  };
-  scenes: Scene[];
-  soundscape?: Soundscape;
-}
+export type GeneratedPrompts = string;
 
 export interface Project {
   id: string;
@@ -97,6 +77,7 @@ export interface Project {
   singlePrompt: string;
   singleReferenceImage: BaseImage | null;
   generatedVideoUrl: string | null;
+  videoModel: VideoModel;
   // Storyboard State
   mainBrief: string;
   backgroundImage: BaseImage | null;
