@@ -23,7 +23,7 @@ const createNewProject = (name: string): Project => ({
   singlePrompt: '',
   singleReferenceImage: null,
   generatedVideoUrl: null,
-  videoModel: VideoModel.VEO_3,
+  videoModel: VideoModel.VEO_2, // <-- FIX: Added default video model
   mainBrief: '',
   backgroundImage: null,
   objectImages: [],
