@@ -1,12 +1,12 @@
-import { GoogleGenAI, HarmCategory, HarmBlockThreshold } from "@google/genai";
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import { MODEL_NAME } from '../constants';
 import type { VideoOptions, BaseImage, GeneratedPrompts, StoryboardImage, DirectorStyle, ChatMessage, ObjectRole, VideoModel } from '../types';
 
-if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable not set");
+if (!process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY environment variable not set");
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const safetySettings = [
   { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
@@ -15,28 +15,39 @@ const safetySettings = [
   { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
 ];
 
+const textModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest", safetySettings });
+const videoModel = genAI.getGenerativeModel({ model: "models/veo-2.0-generate-001" }); // Placeholder, will be dynamic
+
 // --- Video Generation Service (Single Mode) ---
 export async function generateVideo(prompt: string, options: VideoOptions, image: BaseImage | null, model: VideoModel): Promise<any> {
-    const config: any = {
-      numberOfVideos: 1,
+    const generationConfig = {
       aspectRatio: options.aspectRatio,
-    };
-    
-    const requestPayload: any = {
-        model: model,
-        prompt: prompt,
-        config: config,
+      // Add other video-specific configs here as needed
     };
 
+    const parts: any[] = [{ text: prompt }];
+
     if (image) {
-        requestPayload.image = {
-            imageBytes: image.base64,
-            mimeType: image.mimeType,
-        };
+        parts.push({
+            inlineData: {
+                data: image.base64,
+                mimeType: image.mimeType,
+            }
+        });
     }
 
     try {
-        return await ai.models.generateVideos(requestPayload);
+        const videoGenModel = genAI.getGenerativeModel({ model: model });
+        const result = await videoGenModel.generateContent({
+          contents: [{ parts }],
+          generationConfig,
+        });
+
+        const videoOperation = result.response.videoOperations?.[0];
+        if (!videoOperation) {
+            throw new Error("Video generation operation not found in response.");
+        }
+        return videoOperation;
     } catch (error) {
         console.error("Error starting video generation:", error);
         throw new Error(`Failed to start video generation. ${error instanceof Error ? error.message : String(error)}`);
@@ -44,14 +55,16 @@ export async function generateVideo(prompt: string, options: VideoOptions, image
 }
 
 export async function pollVideoStatus(
-    operation: any, 
+    operationName: string, 
     onUpdate: (op: any) => void
 ): Promise<any> {
-    let currentOperation = operation;
+    let currentOperation: any = { name: operationName, done: false };
+    
     while (!currentOperation.done) {
         await new Promise(resolve => setTimeout(resolve, 10000));
         try {
-            currentOperation = await ai.operations.getVideosOperation({ operation: currentOperation });
+            const response = await genAI.getVideoOperation(operationName);
+            currentOperation = response;
             onUpdate(currentOperation);
         } catch (error) {
             console.error("Error during polling:", error);
@@ -68,7 +81,7 @@ export async function pollVideoStatus(
 
 export async function fetchVideoBlob(downloadLink: string): Promise<string> {
     try {
-        const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+        const response = await fetch(`${downloadLink}?key=${process.env.GEMINI_API_KEY}`);
         if (!response.ok) {
             throw new Error(`Failed to download video. Status: ${response.status} ${response.statusText}`);
         }
@@ -114,21 +127,21 @@ const mainSystemPrompt = `Anda adalah seorang Sutradara dan Penulis Naskah kelas
 
 **ATURAN WAJIB:**
 1.  **Analisis Mendalam**: Baca "Ide Utama" pengguna dan analisis semua "Aset Visual" (Gambar Latar, Aktor, Properti) untuk memahami esensi cerita, suasana, dan detail visual.
-2.  **Gaya Sutradara**: Terapkan "Gaya Sutradara" yang dipilih pengguna ke dalam setiap aspek naskah, mulai dari pencahayaan, gerakan kamera, hingga suasana.
-3.  **Struktur Naskah**: Naskah Anda HARUS mengikuti format berikut dengan tepat:
-    *   **Paragraf Pembuka (Overture)**: Satu paragraf deskriptif yang kaya, melukiskan suasana, karakter, dan latar secara detail. Ini adalah fondasi dari seluruh adegan.
-    *   **5 Adegan (Scenes)**: Tulis LIMA adegan yang dinumerasi (Adegan 1, Adegan 2, dst.). Setiap adegan harus mendeskripsikan satu bidikan atau aksi spesifik yang membangun cerita secara visual. Gunakan istilah sinematik (misalnya, "close-up", "kamera meluncur perlahan", "pan yang mulus") untuk memberikan instruksi yang jelas.
+2.  **Struktur Naskah**: Naskah Anda HARUS mengikuti format berikut dengan tepat:
+    *   **Paragraf Pembuka (Overture)**: Satu paragraf deskriptif yang kaya, melukiskan suasana, karakter, dan latar secara detail.
+    *   **5 Adegan (Scenes)**: Tulis LIMA adegan yang dinumerasi (Adegan 1, Adegan 2, dst.). Setiap adegan harus mendeskripsikan satu bidikan atau aksi spesifik yang membangun cerita secara visual.
+3.  **Gaya Sutradara**: Terapkan "Gaya Sutradara" yang dipilih pengguna ke dalam setiap aspek naskah.
 4.  **Bahasa**: Seluruh output HARUS dalam Bahasa Indonesia yang indah, puitis, dan sinematik.
 5.  **Output Tunggal**: Hasil akhir Anda hanyalah teks naskah. JANGAN tambahkan penjelasan, komentar, atau format JSON.
 
 ---
 **CONTOH OUTPUT IDEAL:**
 
-Adegan dibuka di sebuah ruang studio minimalis yang diterangi cahaya hangat, bermandikan cahaya alami yang lembut. Dindingnya berwarna terakota yang mengundang, dilengkapi dengan tirai krem tinggi dan menjuntai... (dan seterusnya)
+Adegan dibuka di sebuah ruang studio minimalis yang diterangi cahaya hangat... (dan seterusnya)
 
-Adegan 1: Kamera meluncur perlahan ke depan, memperlihatkan wanita yang berdiri dengan percaya diri... (dan seterusnya)
+Adegan 1: Kamera meluncur perlahan ke depan... (dan seterusnya)
 
-Adegan 2: Sebuah close-up berfokus pada kain dan tekstur atasan... (dan seterusnya)
+Adegan 2: Sebuah close-up berfokus pada kain... (dan seterusnya)
 ... (dan adegan lainnya)
 ---
 `;
@@ -138,8 +151,7 @@ export async function getCreativeSpark(mainBrief: string): Promise<string> {
     Ide Naskah Pengguna: "${mainBrief}"
     Saran mengejutkan Anda (dalam Bahasa Indonesia):`;
     try {
-        const genAI = ai.getGenerativeModel({ model: "gemini-1.5-flash-latest", safetySettings });
-        const result = await genAI.generateContent(prompt);
+        const result = await textModel.generateContent(prompt);
         return result.response.text().trim();
     } catch (error) {
         console.error("Error getting creative spark:", error);
@@ -152,8 +164,7 @@ export async function generateChatTitle(firstMessage: string): Promise<string> {
 User Message: "${firstMessage}"
 Title:`;
     try {
-        const genAI = ai.getGenerativeModel({ model: "gemini-1.5-flash-latest", safetySettings });
-        const result = await genAI.generateContent(prompt);
+        const result = await textModel.generateContent(prompt);
         return result.response.text().trim().replace(/"/g, ''); // Remove quotes
     } catch (error) {
         console.error("Error generating chat title:", error);
@@ -170,8 +181,7 @@ export async function translateText(
 
     const prompt = `Translate the following text from ${sourceLang} to ${targetLang}. Your response must ONLY be the raw translated text.`;
     try {
-        const genAI = ai.getGenerativeModel({ model: "gemini-1.5-flash-latest", safetySettings });
-        const result = await genAI.generateContent(`${prompt}\n\n"${sourceText}"`);
+        const result = await textModel.generateContent(`${prompt}\n\n"${sourceText}"`);
         return result.response.text().trim();
     } catch (error) {
         console.error("Error translating text:", error);
@@ -187,8 +197,10 @@ export function startChat() {
 - **Keep it Conversational & Encouraging:** Your tone is like a helpful creative partner.
 - **Analyze Images First:** Before responding, briefly state what you see to establish context. For example: "Oke, saya lihat kita punya set di ruangan minimalis yang hangat dengan seorang model. Titik awal yang bagus! Perasaan apa yang ingin kakak tonjolkan?"
 `;
-    const genAI = ai.getGenerativeModel({ model: "gemini-1.5-flash-latest", safetySettings, systemInstruction: chatSystemPrompt });
-    const chat = genAI.startChat({ history: [] });
+    const chat = textModel.startChat({ 
+        history: [],
+        systemInstruction: { role: 'system', parts: [{ text: chatSystemPrompt }] }
+    });
 
     const sendMessage = async (
         backgroundImage: BaseImage | null,
@@ -241,8 +253,7 @@ ${chatTranscript}
 **Ide Utama Final (dalam Bahasa Indonesia):**`;
 
     try {
-        const genAI = ai.getGenerativeModel({ model: "gemini-1.5-flash-latest", safetySettings });
-        const result = await genAI.generateContent(systemPrompt);
+        const result = await textModel.generateContent(systemPrompt);
         return result.response.text().trim();
     } catch (error) {
         console.error("Error summarizing chat:", error);
@@ -262,23 +273,23 @@ export async function generatePromptFromStoryboard(
     const styleInstruction = styleDescriptions[directorStyle];
     
     let prompt = `${mainSystemPrompt}\n\nSekarang, laksanakan tugas ini untuk permintaan berikut:\n**Ide Utama Pengguna:** "${mainBrief}"\n**Gaya Sutradara:** ${styleInstruction}`;
-    parts.push({ text: prompt });
+    
 
     if (backgroundImage) {
-        parts.push({ text: "\n\n[Aset Visual: Gambar Latar]" });
+        prompt += "\n\n[Aset Visual: Gambar Latar]";
         parts.push({ inlineData: { mimeType: backgroundImage.mimeType, data: backgroundImage.base64 } });
     }
     if (objectImages.length > 0) {
-        parts.push({ text: "\n\n[Aset Visual: Aktor/Properti]" });
+        prompt += "\n\n[Aset Visual: Aktor/Properti]";
         objectImages.forEach((img) => {
           parts.push({ inlineData: { mimeType: img.mimeType, data: img.base64 } });
         });
     }
+
+    parts.unshift({ text: prompt });
     
     try {
-        const genAI = ai.getGenerativeModel({ model: 'gemini-1.5-flash-latest', safetySettings });
-        const result = await genAI.generateContent({ contents: [{ parts: parts }] });
-        
+        const result = await textModel.generateContent(parts);
         return result.response.text().trim();
 
     } catch (error) {
